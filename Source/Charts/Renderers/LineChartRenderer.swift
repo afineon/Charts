@@ -162,7 +162,7 @@ open class LineChartRenderer: LineRadarRenderer
         
         context.saveGState()
         defer { context.restoreGState() }
-
+        
         if dataSet.isDrawFilledEnabled
         {
             // Copy this path because we make changes to it
@@ -170,7 +170,7 @@ open class LineChartRenderer: LineRadarRenderer
             
             drawCubicFill(context: context, dataSet: dataSet, spline: fillPath!, matrix: valueToPixelMatrix, bounds: _xBounds)
         }
-
+        
         if dataSet.isDrawLineWithGradientEnabled
         {
             drawGradientLine(context: context, dataSet: dataSet, spline: cubicPath, matrix: valueToPixelMatrix)
@@ -268,7 +268,7 @@ open class LineChartRenderer: LineRadarRenderer
         }
         
         let fillMin = dataSet.fillFormatter?.getFillLinePosition(dataSet: dataSet, dataProvider: dataProvider) ?? 0.0
-
+        
         var pt1 = CGPoint(x: CGFloat(dataSet.entryForIndex(bounds.min + bounds.range)?.x ?? 0.0), y: fillMin)
         var pt2 = CGPoint(x: CGFloat(dataSet.entryForIndex(bounds.min)?.x ?? 0.0), y: fillMin)
         pt1 = pt1.applying(matrix)
@@ -321,7 +321,7 @@ open class LineChartRenderer: LineRadarRenderer
         
         
         // more than 1 color
-        if dataSet.colors.count > 1 && !isGradient
+        if dataSet.colors.count > 1
         {
             if _lineSegments.count != pointsPerEntryPair
             {
@@ -329,11 +329,20 @@ open class LineChartRenderer: LineRadarRenderer
                 _lineSegments = [CGPoint](repeating: CGPoint(), count: pointsPerEntryPair)
             }
             
+            var prevE: ChartDataEntry!
             for j in stride(from: _xBounds.min, through: _xBounds.range + _xBounds.min, by: 1)
             {
                 var e: ChartDataEntry! = dataSet.entryForIndex(j)
+                var isDashed = false
                 
                 if e == nil { continue }
+                
+                if let data = e.data as? NSDictionary {
+                    if data["lineStyle"] != nil && data["lineStyle"] as! String == "dashed" {
+                        isDashed = true
+                    }
+                }
+                
                 
                 _lineSegments[0].x = CGFloat(e.x)
                 _lineSegments[0].y = CGFloat(e.y * phaseY)
@@ -344,7 +353,13 @@ open class LineChartRenderer: LineRadarRenderer
                     
                     if e == nil { break }
                     
-                    if isDrawSteppedEnabled
+                    if let data = e.data as? NSDictionary {
+                        if data["lineStyle"] != nil && data["lineStyle"] as! String == "dashed" {
+                            isDashed = true
+                        }
+                    }
+                    
+                    if isDrawSteppedEnabled && !isGradient
                     {
                         _lineSegments[1] = CGPoint(x: CGFloat(e.x), y: _lineSegments[0].y)
                         _lineSegments[2] = _lineSegments[1]
@@ -359,7 +374,7 @@ open class LineChartRenderer: LineRadarRenderer
                 {
                     _lineSegments[1] = _lineSegments[0]
                 }
-
+                
                 for i in 0..<_lineSegments.count
                 {
                     _lineSegments[i] = _lineSegments[i].applying(valueToPixelMatrix)
@@ -377,9 +392,62 @@ open class LineChartRenderer: LineRadarRenderer
                     continue
                 }
                 
-                // get the color that is set for this line-segment
-                context.setStrokeColor(dataSet.color(atIndex: j).cgColor)
-                context.strokeLineSegments(between: _lineSegments)
+                var color1 = dataSet.color(atIndex: j)
+                var color2 = color1
+                
+                let hasCircleColors = dataSet.circleColors.count == dataSet.entryCount
+                
+                if hasCircleColors {
+                    color1 = dataSet.circleColors[j];
+                    color2 = j+1 < dataSet.circleColors.count ? dataSet.circleColors[j+1] : color1
+                }
+                
+                let equalColors = (color1 == color2 && !isDashed)
+                
+                if (!isGradient || equalColors) {
+                    // get the color that is set for this line-segment
+                    context.setStrokeColor(color1.cgColor)
+                    context.strokeLineSegments(between: _lineSegments)
+                } else {
+                    
+                    let startPoint = _lineSegments[0]
+                    let endPoint = _lineSegments[1]
+                    
+                    context.saveGState()
+                    
+                    if (!isDashed) {
+                        let slope:CGFloat = atan2((startPoint.y - endPoint.y), (startPoint.x - endPoint.x))
+                        let cosineY:CGFloat = cos(slope)
+                        let sineY:CGFloat = sin(slope)
+                        let lineWidth:CGFloat = 1.0;
+                        
+                        context.move(to: CGPoint(x:startPoint.x-lineWidth*sineY, y: startPoint.y+lineWidth*cosineY))
+                        context.addLine(to: CGPoint(x:endPoint.x-lineWidth*sineY, y: endPoint.y+lineWidth*cosineY))
+                        context.addLine(to: CGPoint(x:endPoint.x+lineWidth*sineY, y: endPoint.y-lineWidth*cosineY))
+                        context.addLine(to: CGPoint(x:startPoint.x+lineWidth*sineY, y: startPoint.y-lineWidth*cosineY))
+                        context.addLine(to: CGPoint(x:startPoint.x-lineWidth*sineY, y: startPoint.y+lineWidth*cosineY))
+                    } else {
+                        context.setLineDash(phase: 0, lengths: [5, 2])
+                        context.move(to: CGPoint(x:startPoint.x, y: startPoint.y))
+                        context.addLine(to: CGPoint(x:endPoint.x, y: endPoint.y))
+                        context.replacePathWithStrokedPath()
+                    }
+                    
+                    context.clip()
+                    
+                    let baseSpace = CGColorSpaceCreateDeviceRGB()
+                    
+                    
+                    
+                    let colours = [color1.cgColor, color2.cgColor] as CFArray
+                    let grad = CGGradient.init(colorsSpace: baseSpace, colors: colours, locations: [0,1])
+                    
+                    context.drawLinearGradient(grad!, start: _lineSegments[0], end: _lineSegments[1], options: CGGradientDrawingOptions(rawValue: 0))
+                    
+                    context.restoreGState()
+                }
+                prevE = e;
+                
             }
         }
         else if !isGradient
@@ -392,30 +460,46 @@ open class LineChartRenderer: LineRadarRenderer
             
             if e1 != nil
             {
-                context.beginPath()
+                
                 var firstPoint = true
+                
+                context.saveGState()
                 
                 for x in stride(from: _xBounds.min, through: _xBounds.range + _xBounds.min, by: 1)
                 {
+                    var isDashed = false
+                    
+                    context.beginPath()
                     e1 = dataSet.entryForIndex(x == 0 ? 0 : (x - 1))
                     e2 = dataSet.entryForIndex(x)
                     
                     if e1 == nil || e2 == nil { continue }
+                    
+                    if let data = e1.data as? NSDictionary {
+                        if data["lineStyle"] != nil && data["lineStyle"] as! String == "dashed" {
+                            isDashed = true
+                        }
+                    }
+                    
+                    if let data = e2.data as? NSDictionary {
+                        if data["lineStyle"] != nil && data["lineStyle"] as! String == "dashed" {
+                            isDashed = true
+                        }
+                    }
+                    
+                    if (isDashed) {
+                        context.setLineDash(phase: 0, lengths: [5, 2])
+                    } else {
+                        context.setLineDash(phase: 0, lengths: [])
+                    }
                     
                     let pt = CGPoint(
                         x: CGFloat(e1.x),
                         y: CGFloat(e1.y * phaseY)
                         ).applying(valueToPixelMatrix)
                     
-                    if firstPoint
-                    {
-                        context.move(to: pt)
-                        firstPoint = false
-                    }
-                    else
-                    {
-                        context.addLine(to: pt)
-                    }
+                    context.setStrokeColor(dataSet.color(atIndex: 0).cgColor)
+                    context.move(to: pt)
                     
                     if isDrawSteppedEnabled
                     {
@@ -425,30 +509,29 @@ open class LineChartRenderer: LineRadarRenderer
                             ).applying(valueToPixelMatrix))
                     }
                     
+                    
                     context.addLine(to: CGPoint(
                         x: CGFloat(e2.x),
                         y: CGFloat(e2.y * phaseY)
                         ).applying(valueToPixelMatrix))
-                }
-                
-                if !firstPoint
-                {
-                    context.setStrokeColor(dataSet.color(atIndex: 0).cgColor)
                     context.strokePath()
                 }
+                
+                context.restoreGState()
             }
         }
         
-        if (isGradient)
-        {
-            let path = generateGradientLinePath(dataSet: dataSet,
-                                                fillMin: dataSet.fillFormatter?.getFillLinePosition(dataSet: dataSet, dataProvider: dataProvider) ?? 0.0,
-                                                from: _xBounds.min,
-                                                to: _xBounds.max,
-                                                matrix: trans.valueToPixelMatrix)
-            
-            drawGradientLine(context: context, dataSet: dataSet, spline: path, matrix: valueToPixelMatrix)
-        }
+        /*
+         if (isGradient)
+         {
+         let path = generateGradientLinePath(dataSet: dataSet,
+         fillMin: dataSet.fillFormatter?.getFillLinePosition(dataSet: dataSet, dataProvider: dataProvider) ?? 0.0,
+         from: _xBounds.min,
+         to: _xBounds.max,
+         matrix: trans.valueToPixelMatrix)
+         
+         drawGradientLine(context: context, dataSet: dataSet, spline: path, matrix: valueToPixelMatrix)
+         }*/
     }
     
     open func drawLinearFill(context: CGContext, dataSet: LineChartDataSetProtocol, trans: Transformer, bounds: XBounds)
@@ -520,7 +603,7 @@ open class LineChartRenderer: LineRadarRenderer
             let dataProvider = dataProvider,
             let lineData = dataProvider.lineData
             else { return }
-
+        
         if isDrawingValuesAllowed(dataProvider: dataProvider)
         {
             var dataSets = lineData.dataSets
@@ -616,7 +699,7 @@ open class LineChartRenderer: LineRadarRenderer
             else { return }
         
         let phaseY = animator.phaseY
-
+        
         let dataSets = lineData.dataSets
         
         var pt = CGPoint()
@@ -653,7 +736,7 @@ open class LineChartRenderer: LineRadarRenderer
             for j in stride(from: _xBounds.min, through: _xBounds.range + _xBounds.min, by: 1)
             {
                 guard let e = dataSet.entryForIndex(j) else { break }
-
+                
                 pt.x = CGFloat(e.x)
                 pt.y = CGFloat(e.y * phaseY)
                 pt = pt.applying(valueToPixelMatrix)
@@ -699,7 +782,7 @@ open class LineChartRenderer: LineRadarRenderer
                     if drawCircleHole
                     {
                         context.setFillColor(dataSet.circleHoleColor!.cgColor)
-
+                        
                         // The hole rect
                         rect.origin.x = pt.x - circleHoleRadius
                         rect.origin.y = pt.y - circleHoleRadius
@@ -738,7 +821,7 @@ open class LineChartRenderer: LineRadarRenderer
             {
                 continue
             }
-
+            
             context.setStrokeColor(set.highlightColor.cgColor)
             context.setLineWidth(set.highlightLineWidth)
             if set.highlightLineDashLengths != nil
@@ -814,7 +897,7 @@ open class LineChartRenderer: LineRadarRenderer
         var cGreen: CGFloat = 0
         var cBlue: CGFloat = 0
         var cAlpha: CGFloat = 0
-
+        
         //Set lower bound color
         gradientLocations.append(0)
         var cColor = dataSet.color(atIndex: 0)
@@ -822,13 +905,13 @@ open class LineChartRenderer: LineRadarRenderer
         {
             gradientColors += [cRed, cGreen, cBlue, cAlpha]
         }
-
+        
         //Set middle colors
         guard let gradientPositions = dataSet.gradientPositions else
         {
             fatalError("Must set `gradientPositions if `dataSet.isDrawLineWithGradientEnabled` is true")
         }
-
+        
         for position in gradientPositions
         {
             let positionLocation = CGPoint(x: 0, y: position)
@@ -864,7 +947,7 @@ open class LineChartRenderer: LineRadarRenderer
         {
             gradientColors += [cRed, cGreen, cBlue, cAlpha]
         }
-
+        
         //Define gradient
         let baseSpace = CGColorSpaceCreateDeviceRGB()
         let gradient: CGGradient?
@@ -875,9 +958,9 @@ open class LineChartRenderer: LineRadarRenderer
         {
             gradient = CGGradient(colorSpace: baseSpace, colorComponents: gradientColors, locations: nil, count: gradientColors.count / 4)
         }
-
+        
         guard gradient != nil else { return }
-
+        
         //Draw gradient path
         context.beginPath()
         context.addPath(gradientPath)
@@ -885,3 +968,4 @@ open class LineChartRenderer: LineRadarRenderer
         context.drawLinearGradient(gradient!, start: gradientStart, end: gradientEnd, options: [])
     }
 }
+
